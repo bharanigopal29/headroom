@@ -7327,7 +7327,10 @@ class OpenAIHandlerMixin:
                 content={
                     "error": {
                         "type": "invalid_request",
-                        "message": "Invalid JSON in request body.",
+                        "message": (
+                            "Invalid JSON in request body. Escape line breaks inside "
+                            "JSON strings as \\n and verify quotes and commas."
+                        ),
                     }
                 },
             )
@@ -7383,6 +7386,10 @@ class OpenAIHandlerMixin:
             # Extract CompressConfig options from request body
             compress_config = body.get("config", {})
             compress_user_messages = compress_config.get("compress_user_messages", False)
+            compress_system_messages = compress_config.get("compress_system_messages")
+            compress_assistant_text_blocks = compress_config.get(
+                "compress_assistant_text_blocks"
+            )
             target_ratio = compress_config.get("target_ratio")
             protect_recent = compress_config.get("protect_recent")
             protect_analysis_context = compress_config.get("protect_analysis_context")
@@ -7393,6 +7400,12 @@ class OpenAIHandlerMixin:
             }
             if compress_user_messages:
                 pipeline_kwargs["compress_user_messages"] = True
+            if compress_system_messages is not None:
+                pipeline_kwargs["compress_system_messages"] = bool(compress_system_messages)
+            if compress_assistant_text_blocks is not None:
+                pipeline_kwargs["compress_assistant_text_blocks"] = bool(
+                    compress_assistant_text_blocks
+                )
             if target_ratio is not None:
                 pipeline_kwargs["target_ratio"] = float(target_ratio)
             if protect_recent is not None:

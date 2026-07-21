@@ -148,6 +148,16 @@ def require_loopback(request: Request) -> None:  # type: ignore[valid-type]
        check alone passes, but the ``Host:`` header still reads
        ``attacker.com`` and we reject the request here.
 
+    Trusted-gateway exception
+    -------------------------
+    When ``HEADROOM_PROXY_TRUSTED_GATEWAY_CIDRS`` is set (e.g. Docker
+    bridge ``172.16.0.0/12``), peers inside those CIDRs are treated as
+    loopback-equivalent for gated endpoints such as ``/v1/compress``.
+    Container-to-container callers use service Hostnames
+    (``headroom:8787``), so the Host-header DNS-rebinding gate is
+    skipped for trusted peers — rebinding requires a browser on
+    loopback, which these peers are not.
+
     Returning 404 (not 403) keeps debug endpoints invisible to
     external scanners — indistinguishable from "no such route".
     """
@@ -156,19 +166,32 @@ def require_loopback(request: Request) -> None:  # type: ignore[valid-type]
 
     client = getattr(request, "client", None)
     host = getattr(client, "host", None) if client is not None else None
-    if not is_loopback_host(host):
-        # No body: minimal FastAPI default, behaves like "no route".
-        raise HTTPException(status_code=404)
-
-    headers = getattr(request, "headers", None)
-    if headers is None:
-        # Manual ``Request`` stub with no ``headers`` attribute — used
-        # by older unit tests that pre-date this gate. Treat the same
-        # way as the IP-only path did and accept.
+    if is_loopback_host(host):
+        headers = getattr(request, "headers", None)
+        if headers is None:
+            # Manual ``Request`` stub with no ``headers`` attribute — used
+            # by older unit tests that pre-date this gate. Treat the same
+            # way as the IP-only path did and accept.
+            return
+        try:
+            host_header = headers.get("host")
+        except AttributeError:
+            host_header = None
+        if not is_loopback_host_header(host_header):
+            raise HTTPException(status_code=404)
         return
+
+    # Non-loopback peer: allow only when the operator explicitly listed
+    # their container/gateway CIDRs (Docker Compose sidecar pattern).
     try:
-        host_header = headers.get("host")
-    except AttributeError:
-        host_header = None
-    if not is_loopback_host_header(host_header):
-        raise HTTPException(status_code=404)
+        from headroom.proxy.forwarded_headers import (
+            load_trusted_gateway_cidrs,
+            peer_is_trusted_gateway,
+        )
+    except ImportError:  # pragma: no cover - defensive
+        raise HTTPException(status_code=404) from None
+
+    if peer_is_trusted_gateway(host, load_trusted_gateway_cidrs()):
+        return
+
+    raise HTTPException(status_code=404)

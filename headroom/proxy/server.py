@@ -4328,8 +4328,101 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "data": retrieval_data,
         }
 
-    # Compression-only endpoint (for TypeScript SDK and other HTTP clients)
-    @app.post("/v1/compress", dependencies=[Depends(_require_loopback)])
+    # Compression-only endpoint (for TypeScript SDK and other HTTP clients).
+    # The handler intentionally reads the raw Request so compressed request
+    # bodies remain supported. Describe the body explicitly for OpenAPI instead
+    # of adding a parsed FastAPI body parameter, which would bypass that reader.
+    compress_openapi_body = {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["model", "messages"],
+                    "properties": {
+                        "model": {"type": "string", "example": "gpt-4o"},
+                        "messages": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["role", "content"],
+                                "properties": {
+                                    "role": {
+                                        "type": "string",
+                                        "enum": ["user", "system", "assistant", "tool"],
+                                    },
+                                    "content": {},
+                                    "tool_call_id": {"type": "string"},
+                                },
+                                "additionalProperties": True,
+                            },
+                        },
+                        "config": {
+                            "type": "object",
+                            "properties": {
+                                "compress_user_messages": {"type": "boolean"},
+                                "compress_system_messages": {"type": "boolean"},
+                                "compress_assistant_text_blocks": {"type": "boolean"},
+                                "protect_recent": {"type": "integer", "minimum": 0},
+                                "target_ratio": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                },
+                                "protect_analysis_context": {"type": "boolean"},
+                            },
+                            "additionalProperties": True,
+                        },
+                        "token_budget": {"type": "integer", "minimum": 1},
+                    },
+                    "additionalProperties": True,
+                },
+                "example": {
+                    "model": "gpt-4o",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                [
+                                    {
+                                        "id": index,
+                                        "sku": f"SKU-{index:04d}",
+                                        "warehouse": (
+                                            "US-EAST" if index % 2 == 0 else "US-WEST"
+                                        ),
+                                        "qty": 50 + (index % 40),
+                                        "status": (
+                                            "low_stock" if index % 17 == 0 else "active"
+                                        ),
+                                        "last_sync": "2024-01-15T00:00:00Z",
+                                        "notes": (
+                                            "Routine restock cycle completed without "
+                                            f"incident for item {index}. Inventory "
+                                            "checked and verified against warehouse "
+                                            "ledger."
+                                        ),
+                                    }
+                                    for index in range(1, 151)
+                                ]
+                            ),
+                        }
+                    ],
+                    "config": {
+                        "compress_user_messages": True,
+                        "compress_system_messages": True,
+                        "compress_assistant_text_blocks": True,
+                        "protect_recent": 0,
+                    },
+                },
+            }
+        },
+    }
+
+    @app.post(
+        "/v1/compress",
+        dependencies=[Depends(_require_loopback)],
+        openapi_extra={"requestBody": compress_openapi_body},
+    )
     async def compress_messages(request: Request):
         return await proxy.handle_compress(request)
 

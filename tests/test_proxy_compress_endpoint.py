@@ -85,6 +85,22 @@ class TestCompressEndpointValidation:
 class TestCompressEndpointBasic:
     """Test basic compress endpoint behavior."""
 
+    def test_openapi_documents_editable_request_body(self, client):
+        """Swagger UI should render a JSON editor for the compress payload."""
+        response = client.get("/openapi.json")
+
+        assert response.status_code == 200
+        operation = response.json()["paths"]["/v1/compress"]["post"]
+        request_body = operation["requestBody"]
+        media = request_body["content"]["application/json"]
+
+        assert request_body["required"] is True
+        assert set(media["schema"]["required"]) == {"model", "messages"}
+        assert media["example"]["model"] == "gpt-4o"
+        assert media["example"]["messages"][0]["role"] == "user"
+        assert len(json.loads(media["example"]["messages"][0]["content"])) == 150
+        assert media["example"]["config"]["compress_system_messages"] is True
+
     def test_empty_messages_returns_empty(self, client):
         """Empty messages list should return as-is with zero metrics."""
         response = client.post(
@@ -131,6 +147,41 @@ class TestCompressEndpointBasic:
         assert data["tokens_after"] >= 0
         assert data["tokens_saved"] >= 0
         assert data["compression_ratio"] > 0
+
+    def test_role_compression_options_are_forwarded(self, client, monkeypatch):
+        """System and assistant controls should reach the compression pipeline."""
+        from types import SimpleNamespace
+
+        captured = {}
+
+        def apply(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                messages=kwargs["messages"],
+                tokens_before=20,
+                tokens_after=10,
+                transforms_applied=["test"],
+                transforms_summary={"test": 1},
+                markers_inserted=[],
+            )
+
+        monkeypatch.setattr(client.app.state.proxy.openai_pipeline, "apply", apply)
+
+        response = client.post(
+            "/v1/compress",
+            json={
+                "messages": [{"role": "system", "content": "Long instructions"}],
+                "model": "gpt-4",
+                "config": {
+                    "compress_system_messages": True,
+                    "compress_assistant_text_blocks": True,
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured["compress_system_messages"] is True
+        assert captured["compress_assistant_text_blocks"] is True
 
     def test_bypass_header_returns_uncompressed(self, client):
         """X-Headroom-Bypass header should skip compression."""
