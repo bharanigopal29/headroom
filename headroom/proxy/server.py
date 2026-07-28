@@ -52,13 +52,14 @@ import httpx
 
 try:
     import uvicorn
-    from fastapi import Depends, FastAPI, HTTPException, Request, Response
+    from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
+    Body = None  # type: ignore[assignment,misc]
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -2040,6 +2041,116 @@ _is_known_websocket_callback_failure = is_known_websocket_callback_failure
 
 
 _tool_schema_saved_from_tags = tool_schema_saved_from_tags
+
+
+def _compress_openapi_example() -> dict[str, Any]:
+    """Build the Swagger example payload for POST /v1/compress."""
+    return {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": json.dumps(
+                    [
+                        {
+                            "id": index,
+                            "sku": f"SKU-{index:04d}",
+                            "warehouse": ("US-EAST" if index % 2 == 0 else "US-WEST"),
+                            "qty": 50 + (index % 40),
+                            "status": ("low_stock" if index % 17 == 0 else "active"),
+                            "last_sync": "2024-01-15T00:00:00Z",
+                            "notes": (
+                                "Routine restock cycle completed without "
+                                f"incident for item {index}. Inventory "
+                                "checked and verified against warehouse "
+                                "ledger."
+                            ),
+                        }
+                        for index in range(1, 151)
+                    ]
+                ),
+            }
+        ],
+        "config": {
+            "compress_user_messages": True,
+            "compress_system_messages": True,
+            "compress_assistant_text_blocks": True,
+            "protect_recent": 0,
+        },
+    }
+
+
+def _compress_openapi_request_body() -> dict[str, Any]:
+    """OpenAPI requestBody so Swagger UI shows an editable JSON editor.
+
+    The route handler only accepts ``Request`` (so Content-Encoding-compressed
+    bodies still work). Without this explicit body schema, Swagger shows
+    "No parameters" and no way to send a payload.
+    """
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["model", "messages"],
+                    "properties": {
+                        "model": {"type": "string", "examples": ["gpt-4o"]},
+                        "messages": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["role", "content"],
+                                "properties": {
+                                    "role": {
+                                        "type": "string",
+                                        "enum": [
+                                            "user",
+                                            "system",
+                                            "assistant",
+                                            "tool",
+                                        ],
+                                    },
+                                    "content": {
+                                        "description": (
+                                            "Message content (string or structured blocks)"
+                                        ),
+                                    },
+                                    "tool_call_id": {"type": "string"},
+                                },
+                                "additionalProperties": True,
+                            },
+                        },
+                        "config": {
+                            "type": "object",
+                            "properties": {
+                                "compress_user_messages": {"type": "boolean"},
+                                "compress_system_messages": {"type": "boolean"},
+                                "compress_assistant_text_blocks": {"type": "boolean"},
+                                "protect_recent": {"type": "integer", "minimum": 0},
+                                "target_ratio": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                },
+                                "protect_analysis_context": {"type": "boolean"},
+                            },
+                            "additionalProperties": True,
+                        },
+                        "token_budget": {"type": "integer", "minimum": 1},
+                    },
+                    "additionalProperties": True,
+                },
+                # Named examples populate Swagger UI's Try-it-out editor reliably.
+                "examples": {
+                    "default": {
+                        "summary": "Compress a large JSON tool payload",
+                        "value": _compress_openapi_example(),
+                    }
+                },
+            }
+        },
+    }
 
 
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
@@ -4329,101 +4440,21 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         }
 
     # Compression-only endpoint (for TypeScript SDK and other HTTP clients).
-    # The handler intentionally reads the raw Request so compressed request
-    # bodies remain supported. Describe the body explicitly for OpenAPI instead
-    # of adding a parsed FastAPI body parameter, which would bypass that reader.
-    compress_openapi_body = {
-        "required": True,
-        "content": {
-            "application/json": {
-                "schema": {
-                    "type": "object",
-                    "required": ["model", "messages"],
-                    "properties": {
-                        "model": {"type": "string", "example": "gpt-4o"},
-                        "messages": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["role", "content"],
-                                "properties": {
-                                    "role": {
-                                        "type": "string",
-                                        "enum": ["user", "system", "assistant", "tool"],
-                                    },
-                                    "content": {},
-                                    "tool_call_id": {"type": "string"},
-                                },
-                                "additionalProperties": True,
-                            },
-                        },
-                        "config": {
-                            "type": "object",
-                            "properties": {
-                                "compress_user_messages": {"type": "boolean"},
-                                "compress_system_messages": {"type": "boolean"},
-                                "compress_assistant_text_blocks": {"type": "boolean"},
-                                "protect_recent": {"type": "integer", "minimum": 0},
-                                "target_ratio": {
-                                    "type": "number",
-                                    "minimum": 0,
-                                    "maximum": 1,
-                                },
-                                "protect_analysis_context": {"type": "boolean"},
-                            },
-                            "additionalProperties": True,
-                        },
-                        "token_budget": {"type": "integer", "minimum": 1},
-                    },
-                    "additionalProperties": True,
-                },
-                "example": {
-                    "model": "gpt-4o",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                [
-                                    {
-                                        "id": index,
-                                        "sku": f"SKU-{index:04d}",
-                                        "warehouse": (
-                                            "US-EAST" if index % 2 == 0 else "US-WEST"
-                                        ),
-                                        "qty": 50 + (index % 40),
-                                        "status": (
-                                            "low_stock" if index % 17 == 0 else "active"
-                                        ),
-                                        "last_sync": "2024-01-15T00:00:00Z",
-                                        "notes": (
-                                            "Routine restock cycle completed without "
-                                            f"incident for item {index}. Inventory "
-                                            "checked and verified against warehouse "
-                                            "ledger."
-                                        ),
-                                    }
-                                    for index in range(1, 151)
-                                ]
-                            ),
-                        }
-                    ],
-                    "config": {
-                        "compress_user_messages": True,
-                        "compress_system_messages": True,
-                        "compress_assistant_text_blocks": True,
-                        "protect_recent": 0,
-                    },
-                },
-            }
-        },
-    }
-
+    # ``body: dict = Body()`` makes Swagger UI render an editable request-body
+    # editor. openapi_extra supplies the detailed schema + example. The handler
+    # still re-reads the raw Request so Content-Encoding-compressed bodies work
+    # (Starlette caches body bytes after the documented Body is parsed).
     @app.post(
         "/v1/compress",
         dependencies=[Depends(_require_loopback)],
-        openapi_extra={"requestBody": compress_openapi_body},
+        openapi_extra={"requestBody": _compress_openapi_request_body()},
     )
-    async def compress_messages(request: Request):
+    async def compress_messages(
+        request: Request,
+        body: dict[str, Any] | None = Body(default=None),
+    ):
+        # ``body`` is only for OpenAPI/Swagger; handle_compress owns parsing.
+        _ = body
         return await proxy.handle_compress(request)
 
     register_provider_routes(app, proxy)
